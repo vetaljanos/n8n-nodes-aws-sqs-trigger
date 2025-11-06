@@ -49,7 +49,7 @@ export class AwsSqsTrigger implements INodeType {
 				default: '',
 				required: true,
 				description:
-					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code-examples/expressions/">expression</a>',
+					'Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>',
 			},
 			{
 				displayName: 'Interval',
@@ -102,7 +102,7 @@ export class AwsSqsTrigger implements INodeType {
 						type: 'number',
 						default: 30,
 						description:
-							'The duration (in seconds) that the received messages are hidden from subsequent retrieve requests after being retrieved by a receive message request. Value must be in range 0-43200 (12 hours)',
+							'The duration (in seconds) that the received messages are hidden from subsequent retrieve requests after being retrieved by a receive message request. Value must be in range 0-43200 (12 hours).',
 					},
 					{
 						displayName: 'Max Number Of Messages',
@@ -252,7 +252,7 @@ export class AwsSqsTrigger implements INodeType {
 
 				const messagesArray = Array.isArray(messages) ? messages : [messages];
 
-				let returnMessages: INodeExecutionData[] = messagesArray.map((json: any) => ({ json }));
+				const returnMessages: INodeExecutionData[] = messagesArray.map((json: {}) => ({ json }));
 
 				if (options.deleteMessages) {
 					const deleteMessagesParams = ['Version=2012-11-05'];
