@@ -8,7 +8,7 @@ import {
 	ITriggerFunctions,
 	ITriggerResponse,
 	NodeApiError,
-	NodeConnectionType,
+	NodeConnectionTypes,
 	NodeOperationError
 } from 'n8n-workflow';
 
@@ -16,6 +16,7 @@ import {
 	awsApiRequestSOAP,
 } from '../GenericFunctions';
 
+// noinspection JSUnusedGlobalSymbols
 export class AwsSqsTrigger implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'AWS SQS Trigger',
@@ -29,7 +30,7 @@ export class AwsSqsTrigger implements INodeType {
 			name: 'AWS SQS Trigger',
 		},
 		inputs: [],
-		outputs: [NodeConnectionType.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'aws',
@@ -101,7 +102,7 @@ export class AwsSqsTrigger implements INodeType {
 						type: 'number',
 						default: 30,
 						description:
-							'The duration (in seconds) that the received messages are hidden from subsequent retrieve requests after being retrieved by a receive message request',
+							'The duration (in seconds) that the received messages are hidden from subsequent retrieve requests after being retrieved by a receive message request. Value must be in range 0-43200 (12 hours)',
 					},
 					{
 						displayName: 'Max Number Of Messages',
@@ -109,7 +110,7 @@ export class AwsSqsTrigger implements INodeType {
 						type: 'number',
 						default: 1,
 						description:
-							'Maximum number of messages to return. SQS never returns more messages than this value but might return fewer.',
+							'Maximum number of messages to return. SQS never returns more messages than this value but might return fewer. Should be in range 1-10',
 					},
 					{
 						displayName: 'Wait Time Seconds',
@@ -179,11 +180,35 @@ export class AwsSqsTrigger implements INodeType {
 		];
 
 		if (options.visibilityTimeout) {
-			receiveMessageParams.push(`VisibilityTimeout=${options.visibilityTimeout}`);
+			const visibilityTimeout = options.visibilityTimeout;
+
+			if (typeof visibilityTimeout === 'number') {
+				if (visibilityTimeout < 0 || visibilityTimeout > 43200) {
+					throw new NodeOperationError(
+						this.getNode(),
+						'Visibility Timeout must be between 0 and 43200 (12 hours).',
+					);
+				}
+
+				receiveMessageParams.push(`VisibilityTimeout=${visibilityTimeout}`);
+			}
+
 		}
 
 		if (options.maxNumberOfMessages) {
-			receiveMessageParams.push(`MaxNumberOfMessages=${options.maxNumberOfMessages}`);
+			const maxNumberOfMessages = options.maxNumberOfMessages;
+
+			if (typeof maxNumberOfMessages === 'number') {
+				if (maxNumberOfMessages < 1 || maxNumberOfMessages > 10) {
+					throw new NodeOperationError(
+						this.getNode(),
+						'Max Number Of Messages must be between 1 and 10.',
+					);
+				}
+
+				receiveMessageParams.push(`MaxNumberOfMessages=${maxNumberOfMessages}`);
+			}
+
 		}
 
 		if (options.waitTimeSeconds) {
@@ -211,6 +236,8 @@ export class AwsSqsTrigger implements INodeType {
 			intervalValue *= 60 * 60;
 		}
 
+		intervalValue = Math.max(intervalValue, Number(options.waitTimeSeconds || 0));
+
 		const executeTrigger = async () => {
 			try {
 				const responseData = await awsApiRequestSOAP.call(
@@ -219,56 +246,50 @@ export class AwsSqsTrigger implements INodeType {
 					'GET',
 					`${queuePath}?${receiveMessageParams.join('&')}`,
 				);
-				const receiveMessageResult = responseData.ReceiveMessageResponse.ReceiveMessageResult;
-				const multipleMessagesReceived = Array.isArray(receiveMessageResult.Message);
+				const receiveMessageResult = responseData?.ReceiveMessageResponse?.ReceiveMessageResult;
+				const messages = receiveMessageResult?.Message;
+				if (!messages) return;
 
-				if (receiveMessageResult !== '') {
-					let returnMessages: INodeExecutionData[] = [];
+				const messagesArray = Array.isArray(messages) ? messages : [messages];
 
-					if (multipleMessagesReceived) {
-						returnMessages = receiveMessageResult.Message.map((message: {}) => {
-							return { json: message };
-						});
-					} else {
-						returnMessages.push({ json: receiveMessageResult.Message });
-					}
+				let returnMessages: INodeExecutionData[] = messagesArray.map((json: any) => ({ json }));
 
-					if (options.deleteMessages) {
-						const deleteMessagesParams = ['Version=2012-11-05'];
+				if (options.deleteMessages) {
+					const deleteMessagesParams = ['Version=2012-11-05'];
 
-						if (multipleMessagesReceived) {
-							deleteMessagesParams.push(`Action=DeleteMessageBatch`);
+					if (messagesArray.length > 1) {
+						deleteMessagesParams.push(`Action=DeleteMessageBatch`);
 
-							for (let i = 0; i < receiveMessageResult.Message.length; i++) {
-								const deleteMessageBatchRequestId = i + 1;
-								const deleteMessageBatchRequestEntry = `DeleteMessageBatchRequestEntry.${deleteMessageBatchRequestId}`;
+						for (let i = 0; i < messagesArray.length; i++) {
+							const deleteMessageBatchRequestId = i + 1;
+							const deleteMessageBatchRequestEntry = `DeleteMessageBatchRequestEntry.${deleteMessageBatchRequestId}`;
 
-								deleteMessagesParams.push(
-									`${deleteMessageBatchRequestEntry}.Id=msg${deleteMessageBatchRequestId}`,
-									`${deleteMessageBatchRequestEntry}.ReceiptHandle=${encodeURIComponent(
-										receiveMessageResult.Message[i].ReceiptHandle,
-									)}`,
-								);
-							}
-						} else {
 							deleteMessagesParams.push(
-								`Action=DeleteMessage`,
-								`ReceiptHandle=${encodeURIComponent(receiveMessageResult.Message.ReceiptHandle)}`,
+								`${deleteMessageBatchRequestEntry}.Id=msg${deleteMessageBatchRequestId}`,
+								`${deleteMessageBatchRequestEntry}.ReceiptHandle=${encodeURIComponent(
+									messagesArray[i].ReceiptHandle,
+								)}`,
 							);
 						}
-
-						await awsApiRequestSOAP.call(
-							this,
-							'sqs',
-							'GET',
-							`${queuePath}?${deleteMessagesParams.join('&')}`,
+					} else {
+						deleteMessagesParams.push(
+							`Action=DeleteMessage`,
+							`ReceiptHandle=${encodeURIComponent(messagesArray[0].ReceiptHandle)}`,
 						);
 					}
 
-					this.emit([returnMessages]);
+					await awsApiRequestSOAP.call(
+						this,
+						'sqs',
+						'GET',
+						`${queuePath}?${deleteMessagesParams.join('&')}`,
+					);
 				}
+
+				this.emit([returnMessages]);
+
 			} catch (error) {
-				throw new NodeApiError(this.getNode(), error);
+				this.logger.error(`[SQS] receive/delete failed: ${error?.message || error}`);
 			}
 		};
 
@@ -281,11 +302,15 @@ export class AwsSqsTrigger implements INodeType {
 
 		let running = true;
 		let intervalObj = setTimeout(run, 0);
+		let inFlight = false;
 		async function run() {
-			await executeTrigger();
-			if (running) {
-				intervalObj = setTimeout(run, intervalValue);
-			}
+			if (inFlight) return rearm();
+			inFlight = true;
+			try { await executeTrigger(); }
+			finally { inFlight = false; rearm(); }
+		}
+		function rearm() {
+			if (running) intervalObj = setTimeout(run, intervalValue);
 		}
 
 		async function closeFunction() {
